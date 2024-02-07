@@ -11,27 +11,20 @@ const createTable = async () => {
 
   try {
     await client.connect();
-
+    await client.query('SET enable_experimental_alter_column_type_general = true;');
     const query =`
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      username VARCHAR(255),
-      password VARCHAR(255),
-      email VARCHAR(255),
-      firstname VARCHAR(255),
-      lastname VARCHAR(255),
-      mobile VARCHAR(20),
-      address TEXT,
-      profile TEXT
-    );
+    ALTER TABLE public.emails
+    ADD COLUMN date TIMESTAMP,
+    ADD COLUMN importance INT8
     `;
 
     await client.query(query);
-    console.log('Table "users" created successfully');
+    console.log('Table "email" updated');
   } catch (error) {
     console.error('Error creating table:', error);
   } finally {
     await client.end();
+    
   }
 };
 const createServicesTable = async () => {
@@ -41,11 +34,8 @@ const createServicesTable = async () => {
     await client.connect();
 
     const query = `
-      CREATE TABLE IF NOT EXISTS services (
-        id SERIAL PRIMARY KEY,
-        nom_du_service VARCHAR(255) NOT NULL,
-        description TEXT
-      );
+    ALTER TABLE user_service
+    ALTER COLUMN user_id TYPE INT8 USING user_id::INT8;
     `;
 
     await client.query(query);
@@ -57,50 +47,47 @@ const createServicesTable = async () => {
   }
 };
 
-const Send = async (req,res)=>{
+const Send = async (req, res) => {
+  const { email, text, subject, userId } = req.body;
+  console.log("email from send",userId, email, text, subject);
+  console.log(req.body);
+
+  const client = db.getClient();
+
+  try {
+    await client.connect();
     
-    const {email,text,subject} = req.body
-    console.log(req.body)
-    const client = db.getClient();
-    try {
-      await client.connect();
-      const insertQuery = `
-        INSERT INTO emails (email, text, subject) VALUES ($1, $2, $3) RETURNING id;
+    // Check if userId is provided and has at least one service
+    let importance = 0;
+    if (userId) {
+      const serviceQuery = `
+        SELECT COUNT(*) AS serviceCount
+        FROM user_service
+        WHERE user_id = $1;
       `;
-      const values = [email, text, subject];
-      const result = await client.query(insertQuery, values);
-      console.log(`Email inserted with ID: ${result.rows[0].id}`);
-    let testAccount = await nodemailer.createTestAccount();
-    const transporter = nodemailer.createTransport({
-        host: "smtp.ethereal.email",
-        port: 587,
-        secure: false,
-        auth: {
-          user: testAccount.user,
-          pass: testAccount.pass,
-        },
-      });
-      let message = {
-        from: email,
-        to: "abensalem@gmail.com",
-        subject: subject,
-        text: text,
-        html: "<b>this the body of the email</b>", 
-      }
-      transporter.sendMail(message).then((info)=>{
-        return res.status(201).json({msg :"your email was sending succesfully",
-                                    info : info.messageId,
-                                    preview :nodemailer.getTestMessageUrl(info)});
-      }).catch(error =>{
-        return res.status(500).json({error});
-      })
-    } catch (error) {
-      console.error('Error inserting email details:', error);
-      res.status(500).json({ error: "Internal Server Error" });
-    } finally {
-      await client.end();
+      const serviceValues = [userId];
+      const serviceResult = await client.query(serviceQuery, serviceValues);
+      importance = serviceResult.rows[0].servicecount > 0 ? 1 : 0;
     }
-  };
+
+    // Insert email details into emails table
+    const insertQuery = `
+      INSERT INTO emails (email, text, subject,date, importance)
+      VALUES ($1, $2, $3,NOW(), $4) RETURNING id;
+    `;
+    const insertValues = [email, text, subject, importance];
+    const result = await client.query(insertQuery, insertValues);
+    console.log(importance)
+    console.log(`Email inserted with ID: ${result.rows[0].id}`);
+    res.status(200).json({ msg: "OK" });
+  } catch (error) {
+    console.error('Error inserting email details:', error);
+    res.status(500).json({ error: "Internal Server Error" });
+  } finally {
+    await client.end();
+  }
+};
+
 
   const getMail = async (req, res) => {
     let client;
@@ -124,7 +111,8 @@ const Send = async (req,res)=>{
         email: row.email,
         subject: row.subject,
         text: row.text,
-        time:row.published_at
+        importance : row.importance,
+        date:row.date
       }));
   
       res.status(200).json({ emailData });
@@ -575,26 +563,32 @@ const deleteTechno = async (req, res) => {
     }
   };
   
-const verifyUser = async (req,res,next)=>{
-  const client = db.getClient();
-  try{
-      await client.connect();
-      const {username} = req.method == "GET" ? req.query : req.body;
+  const verifyUser = async (req, res, next) => {
+    const client = db.getClient();
   
-        const query = 'SELECT * FROM users WHERE username = $1';
-        const result = await client.query(query, [username]);
-
-        if (result.rows.length === 0) {
-            return res.status(404).send({ error: "Can't find user" });
-        }
-        next();
-  }
-  catch(error){
-      return res.status(404).send({error : "Authentication Error"});
-  } finally {
-    await client.end();
-  }
-}
+    try {
+      await client.connect();
+      const { username } = req.method === "GET" ? req.query : req.body;
+      console.log(username)
+      const usersQuery = 'SELECT * FROM users WHERE username = $1';
+      const clientQuery = 'SELECT * FROM client WHERE username = $1';
+  
+      const usersResult = await client.query(usersQuery, [username]);
+      const clientResult = await client.query(clientQuery, [username]);
+  
+      if (usersResult.rows.length === 0 && clientResult.rows.length === 0) {
+        return res.status(404).send({ error: "Can't find user" });
+      }
+  
+      next();
+    } catch (error) {
+      console.error('Error verifying user:', error);
+      return res.status(404).send({ error: "Authentication Error" });
+    } finally {
+      await client.end();
+    }
+  };
+  
 
 const register = async(req,res)=>{
   const client = db.getClient();
@@ -630,70 +624,387 @@ await client.query(createUserQuery, [username, hashedPassword, profile || '', em
   }
 }
 
-const login = async(req, res)=> {
+const login = async (req, res) => {
   const client = db.getClient();
   const { username, password } = req.body;
-  console.log(username,password);
-  await client.connect();
-  try {
-    const result = await client.query('SELECT * FROM users WHERE username = $1', [username]);
+  console.log(username, password);
 
-    if (result.rows.length === 0) {
-      return res.status(404).send({ error: "Username not found" });
-    }
-      const user = result.rows[0];
+  await client.connect();
+
+  try {
+    // Check in the "users" table
+    const usersQuery = 'SELECT * FROM users WHERE username = $1';
+    const usersResult = await client.query(usersQuery, [username]);
+
+    if (usersResult.rows.length > 0) {
+      const user = usersResult.rows[0];
       const passwordCheck = await bcrypt.compare(password, user.password);
 
       if (!passwordCheck) {
-          return res.status(400).send({ error: "Incorrect password" });
+        return res.status(400).send({ error: "Incorrect password" });
       }
-      
-      // JWT token
-      const token = jwt.sign({
-          userid: user._id,
-          username: user.username
-      }, "it9R9xOW3hULK96NXLjyMSnS6c+UtSYb78JGYFGJPGE=", { expiresIn: "24h" });
+
+      // JWT token with role and other information
+      const token = jwt.sign(
+        {
+          userid: user.id,
+          email: user.email,
+          username: user.username,
+          role: 'admin', // You can customize the role based on your schema
+          // Include other user information if needed
+        },
+        "it9R9xOW3hULK96NXLjyMSnS6c+UtSYb78JGYFGJPGE=",
+        { expiresIn: "24h" }
+      );
 
       return res.status(200).send({
-          msg: "Login successful",
-          username: user.username,
-          token
+        msg: "Login successful",
+        username: user.username,
+        token,
       });
-  } catch (error) {
-      console.error('Error in login:', error);
-      return res.status(500).send({ error: "Internal Server Error" });
-  }
-}
+    }
 
-const getUser=async(req, res)=> {
+    // Check in the "client" table
+    const clientQuery = 'SELECT * FROM client WHERE username = $1';
+    const clientResult = await client.query(clientQuery, [username]);
+
+    if (clientResult.rows.length > 0) {
+      const clientUser = clientResult.rows[0];
+      const passwordCheck = await bcrypt.compare(password, clientUser.password);
+
+      if (!passwordCheck) {
+        return res.status(400).send({ error: "Incorrect password" });
+      }
+
+      // JWT token with role and other information
+      const token = jwt.sign(
+        {
+          userid: clientUser.id,
+          username: clientUser.username,
+          email:clientUser.email,
+          role: 'client', // You can customize the role based on your schema
+          // Include other client information if needed
+        },
+        "it9R9xOW3hULK96NXLjyMSnS6c+UtSYb78JGYFGJPGE=",
+        { expiresIn: "24h" }
+      );
+
+      return res.status(200).send({
+        msg: "Login successful",
+        username: clientUser.username,
+        token,
+      });
+    }
+
+    // If the username is not found in both tables
+    return res.status(404).send({ error: "Username not found" });
+  } catch (error) {
+    console.error('Error in login:', error);
+    return res.status(500).send({ error: "Internal Server Error" });
+  } finally {
+    await client.end();
+  }
+};
+
+
+const getUser = async (req, res) => {
   const { username } = req.params;
+  const client = db.getClient();
+
+  try {
+    await client.connect();
+
+    if (!username) {
+      return res.status(400).send({ error: "Invalid Username" });
+    }
+
+    // Check in the users table
+    const getUserQueryUsers = 'SELECT * FROM users WHERE username = $1';
+    const getUserResultUsers = await client.query(getUserQueryUsers, [username]);
+
+    if (getUserResultUsers.rows.length > 0) {
+      // User found in users table
+      const { password, ...rest } = getUserResultUsers.rows[0];
+      return res.status(200).send(rest);
+    }
+
+    // Check in the client table
+    const getUserQueryClient = 'SELECT * FROM client WHERE username = $1';
+    const getUserResultClient = await client.query(getUserQueryClient, [username]);
+
+    if (getUserResultClient.rows.length > 0) {
+      // User found in client table
+      const { password, ...rest } = getUserResultClient.rows[0];
+      return res.status(200).send(rest);
+    }
+
+    // User not found in both tables
+    return res.status(404).send({ error: "Couldn't find the user" });
+  } catch (error) {
+    console.error('Error in getUser:', error);
+    return res.status(500).send({ error: "Internal Server Error" });
+  } finally {
+    await client.end();
+  }
+};
+
+const register_client = async(req,res)=>{
   const client = db.getClient();
   try {
     await client.connect();
-    console.log(username);
-      if (!username) {
-          return res.status(400).send({ error: "Invalid Username" });
-      }
-
-      const getUserQuery = 'SELECT * FROM users WHERE username = $1';
-      const getUserResult = await client.query(getUserQuery, [username]);
+      const { username, password, firstName,lastName,phoneNumber, email } = req.body;        
+      console.log(username, password, firstName,lastName,phoneNumber, email);
+      // check the existing user
+      const existingUsernameQuery = 'SELECT * FROM client WHERE username = $1';
+      const existingUsernameResult = await client.query(existingUsernameQuery, [username]);
   
-      if (getUserResult.rows.length === 0) {
-        return res.status(404).send({ error: "Couldn't find the user" });
+      if (existingUsernameResult.rows.length > 0) {
+        return res.status(400).send({ error: "Please use a unique username" });
       }
-      console.log('user exist');
-      // Remove password from user
-      const { password, ...rest } = getUserResult.rows[0];
 
-      return res.status(200).send(rest);
-  } catch (error) {
-      console.error('Error in getUser:', error);
-      return res.status(500).send({ error: "Internal Server Error" });
-  }
+// check for existing email
+const existingEmailQuery = 'SELECT * FROM client WHERE email = $1';
+const existingEmailResult = await client.query(existingEmailQuery, [email]);
+
+if (existingEmailResult.rows.length > 0) {
+  return res.status(400).send({ error: "Please use a unique email" });
 }
 
+//hashed password 
+const hashedPassword = await bcrypt.hash(password, 10);
+
+const createUserQuery = 'INSERT INTO client (username, password, firstname, lastname, mobile, email) VALUES ($1, $2, $3, $4, $5, $6)';
+await client.query(createUserQuery, [username, hashedPassword, firstName, lastName, phoneNumber, email]);
+ return res.status(201).send({ msg: "client Registered Successfully" })
+
+  } catch (error) {
+      return res.status(500).send(error);
+  }
+}
+const get_all_cls = async (req, res) => {
+  const client = db.getClient();
+
+  try {
+    await client.connect();
+
+    const query = `
+      SELECT * FROM client;
+    `;
+    const result = await client.query(query);
+
+    const faq = result.rows;
+
+    res.status(200).json(faq);
+  } catch (error) {
+    console.error('Error getting clients:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  } finally {
+    await client.end();
+  }
+};
+const addUserService = async (req, res) => {
+  const { userId, serviceId} = req.body;
+  const dateObtained =  new Date();
+  const etatDefaultValue = 'en cours de traitement'; // Default value for the "etat" column
+  const client = db.getClient();
+
+  try {
+    await client.connect();
+
+    // Check if the user already has the specified service
+    const checkQuery = 'SELECT * FROM user_service WHERE user_id = $1 AND service_id = $2';
+    const checkResult = await client.query(checkQuery, [userId, serviceId]);
+
+    if (checkResult.rows.length > 0) {
+      // User already has the specified service
+      console.error('User already has the specified service. Cannot add another service.');
+      return res.status(400).json({ error: 'User already has the specified service. Cannot add another service.' });
+    }
+
+    // If user doesn't have the specified service, proceed with the insertion
+    const insertQuery = `
+      INSERT INTO user_service (user_id, service_id, date_obtained, etat)
+      VALUES ($1, $2, $3, $4)
+    `;
+
+    await client.query(insertQuery, [userId, serviceId, dateObtained, etatDefaultValue]);
+    console.log('Data inserted into user_service table successfully');
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('Error inserting data into user_service table:', error);
+    res.status(500).json({ error: 'Internal server error.' });
+  } finally {
+    await client.end();
+  }
+};
+
+
+const getUserServiceInfo = async (req,res) => {
+  const {userid} = req.body
+  const client = db.getClient();
+
+  try {
+    await client.connect();
+    console.log(userid);
+    const query = `
+      SELECT
+        c.firstname || ' ' || c.lastname AS client_name,
+        c.email AS client_email,
+        t.title AS service_name,
+        us.date_obtained,
+        us.etat,
+        us.service_id as id
+      FROM user_service us
+      JOIN client c ON us.user_id = c.id
+      JOIN technologies t ON us.service_id = t.id
+      WHERE us.user_id = $1;
+    `;
+
+    const result = await client.query(query, [userid]);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error retrieving user service information:', error);
+    throw error;
+  } finally {
+    await client.end();
+  }
+};
+const deleteUserService = async (req, res) => {
+  const client = db.getClient();
+  const {userId, serviceId} = req.body;
+  try {
+    await client.connect();
+
+    const query = `
+      DELETE FROM user_service
+      WHERE user_id = $1 AND service_id = $2;
+    `;
+
+    await client.query(query, [userId, serviceId]);
+
+    res.json({ success: true, message: 'User service deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting user service:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  } finally {
+    await client.end();
+  }
+};
+const addDemandeService = async (req, res) => {
+  const { userId, serviceId, dateDemande } = req.body;
+  console.log(userId, serviceId, dateDemande);
+  const client = db.getClient();
+
+  try {
+    await client.connect();
+
+    // Check if the user already has this service in attentes table
+    const checkQuery = `
+      SELECT * FROM attentes
+      WHERE id_user = $1 AND id_service = $2
+    `;
+
+    const existingDemande = await client.query(checkQuery, [userId, serviceId]);
+
+    if (existingDemande.rows.length > 0) {
+      console.log('User already has this service');
+      return res.status(400).send({ error: 'Vous obtenez déjà ce service !' });
+    }
+
+    // If the user doesn't have the service, proceed to insert the new demand
+    const insertQuery = `
+      INSERT INTO attentes (id_user, id_service, date_demande)
+      VALUES ($1, $2, $3)
+    `;
+
+    await client.query(insertQuery, [userId, serviceId, dateDemande]);
+    console.log('Data inserted into attentes table successfully');
+    return res.status(201).send({ message: 'Demande added successfully' });
+  } catch (error) {
+    console.error('Error inserting data into attentes table:', error);
+    return res.status(500).send({ error: 'Internal Server Error' });
+  } finally {
+    await client.end();
+  }
+};
+
+
+const gererDemande = async (req, res) => {
+
+  const { userId, serviceId, etat } = req.body;
+  const currentDate = new Date(); // Get the current date
+  const client = db.getClient();
+  console.log(userId, serviceId, etat)
+  try {
+    await client.connect();
+
+    let query;
+    let parameters;
+
+    if (etat === 'accept' || etat === 'refuser') {
+      query = `
+        UPDATE user_service
+        SET etat = $1, date_obtained = $2
+        WHERE user_id = $3 AND service_id = $4
+      `;
+      parameters = [etat, currentDate, userId, serviceId];
+    } else {
+      console.error('Invalid "etat" value. It should be either "accept" or "refuser".');
+      return res.status(400).json({ error: 'Invalid "etat" value.' });
+    }
+
+    const result = await client.query(query, parameters);
+    
+    if (result.rowCount === 1) {
+      console.log('Demande updated successfully');
+      res.status(200).json({ success: true });
+    } else {
+      console.error('No matching record found for the given user and service.');
+      res.status(404).json({ error: 'No matching record found.' });
+    }
+  } catch (error) {
+    console.error('Error updating demande:', error);
+    res.status(500).json({ error: 'Internal server error.' });
+  } finally {
+    await client.end();
+  }
+};
+const getAllUserServices = async (req, res) => {
+  const client = db.getClient();
+
+  try {
+    await client.connect();
+
+    const query = `
+      SELECT us.*, c.firstname || ' ' || c.lastname AS client_name
+      FROM user_service us
+      JOIN client c ON us.user_id = c.id
+      JOIN technologies t ON us.service_id = t.id
+      ORDER BY us.date_obtained DESC;
+    `;
+
+    const result = await client.query(query);
+
+    const userServices = result.rows;
+    console.log('User services retrieved successfully');
+    res.status(200).json({ userServices });
+  } catch (error) {
+    console.error('Error retrieving user services:', error);
+    res.status(500).json({ error: 'Internal server error.' });
+  } finally {
+    await client.end();
+  }
+};
+
+
+// Example usage:
+// getAllUserServices(req, res);
+
+
+
 module.exports = {
-  Send,getMail,deleteMail,addService,getService,addBlog,getBlogs,modifyBlog,deleteBlog,createTable,addTechno,getAllTechnos, modifyTechno,deleteTechno,addQ,getQ,register, verifyUser, login, getUser
+ getAllUserServices,gererDemande,addDemandeService,deleteUserService,getUserServiceInfo,addUserService,get_all_cls,Send,getMail,deleteMail,addService,getService,addBlog,getBlogs,modifyBlog,deleteBlog,createTable,addTechno,getAllTechnos, modifyTechno,deleteTechno,addQ,getQ,register, verifyUser, login, getUser,register_client
   
 }
 //getUser,verifyUser,login,register

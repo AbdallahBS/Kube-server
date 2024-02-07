@@ -10,7 +10,7 @@ app.use(express.json()); // For JSON data
 
 const router = express.Router();
 
-const { Send, getMail,deleteMail,addService,getService,addBlog,getBlogs,modifyBlog,deleteBlog,createTable,addTechno,getAllTechnos,modifyTechno,deleteTechno ,addQ,getQ,register, verifyUser, login, getUser} = require('../controller/appController.js');
+const { gererDemande,getAllUserServices,addDemandeService,deleteUserService,getUserServiceInfo,register_client,get_all_cls,Send,addUserService, getMail,deleteMail,addService,getService,addBlog,getBlogs,modifyBlog,deleteBlog,createTable,addTechno,getAllTechnos,modifyTechno,deleteTechno ,addQ,getQ,register, verifyUser, login, getUser} = require('../controller/appController.js');
 // Define your routes using the router
 router.post('/sendEmail', Send);
 router.get('/getAllEmails', getMail);
@@ -27,8 +27,17 @@ router.get('/getTech', getAllTechnos);
 router.post('/modTech', modifyTechno);
 router.post('/delTech', deleteTechno);
 router.post('/addQ', addQ);
+router.post('/adduserservice', addUserService);
+router.post('/adddemandeservice', addDemandeService);
+router.post('/gererdemandeservice', gererDemande);
+router.get('/getalluserservice', getAllUserServices);
+
+router.post('/getuserservice', getUserServiceInfo);
+router.post('/deluserservice', deleteUserService);
 router.get('/getQ', getQ);
+router.get('/getcs', get_all_cls);
 router.post('/register', register);
+router.post('/registerc', register_client);
 router.post('/authenticate', verifyUser, (req, res) => res.end());
 router.post('/login', verifyUser, login);
 router.get('/user/:username', getUser);
